@@ -450,7 +450,7 @@ footer{
 
   <div class="warn" id="storeWarn" hidden>
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
-    <span><b>هذا المتصفح لا يسمح بحفظ البيانات هنا.</b> ستُفقد أي مشاركة تسجّلينها بمجرد إغلاق الصفحة. افتحي اللوحة عبر رابط موقع بدل فتح الملف مباشرة من الجهاز.</span>
+    <span id="warnText"></span>
   </div>
 
   <!-- الإحصائية -->
@@ -573,7 +573,7 @@ footer{
     </div>
   </section>
 
-  <footer id="foot">كِفّة للقهوة المختصة &mdash; البيانات محفوظة على هذا الجهاز</footer>
+  <footer id="foot">كِفّة للقهوة المختصة</footer>
 </main>
 
 <!-- نافذة تسجيل الفكرة -->
@@ -631,26 +631,75 @@ footer{
 var TEAM = ["منار","ميعاد","مي","جود","شهد","ضحى","ريما"];
 var KEY  = "kiffa.ideas.v1";
 
-/* ---- storage shim: one place to swap for a shared backend later ---- */
+/* ---- طبقة التخزين ----------------------------------------------------
+   إذا عُبّئت القيمتان أدناه، تُحفظ المشاركات في قاعدة بيانات Supabase
+   ويراها كل من يفتح الرابط من أي جهاز. وإذا تُركتا فارغتين تعود اللوحة
+   تلقائيًا للحفظ المحلي في المتصفح بدل أن تتعطّل.
+
+   مفتاح anon مُصمَّم أصلًا ليكون ظاهرًا في المتصفح — الحماية تأتي من
+   سياسات RLS في supabase/schema.sql. لا تضعي هنا مفتاح service_role.  */
+var SUPABASE_URL      = "";
+var SUPABASE_ANON_KEY = "";
+
 var Store = {
+  cloud: !!(SUPABASE_URL && SUPABASE_ANON_KEY),
+  online: true,
   available: (function(){
     try{ localStorage.setItem("kiffa.probe","1"); localStorage.removeItem("kiffa.probe"); return true; }
     catch(e){ return false; }
   })(),
-  read: function(){
+
+  cache: function(list){
+    try{ localStorage.setItem(KEY, JSON.stringify(list)); return true; }catch(e){ return false; }
+  },
+  cached: function(){
     try{
       var raw = localStorage.getItem(KEY);
       var list = raw ? JSON.parse(raw) : [];
       return Array.isArray(list) ? list : [];
     }catch(e){ return []; }
   },
-  write: function(list){
-    try{ localStorage.setItem(KEY, JSON.stringify(list)); return true; }
-    catch(e){ return false; }
+
+  req: function(path, opts){
+    opts = opts || {};
+    opts.headers = Object.assign({
+      "apikey": SUPABASE_ANON_KEY,
+      "Authorization": "Bearer " + SUPABASE_ANON_KEY,
+      "Content-Type": "application/json"
+    }, opts.headers || {});
+    return fetch(SUPABASE_URL.replace(/\/$/, "") + "/rest/v1/" + path, opts)
+      .then(function(r){
+        if(!r.ok) throw new Error("HTTP " + r.status);
+        return r.status === 204 ? null : r.json();
+      });
+  },
+
+  load: function(){
+    if(!this.cloud) return Promise.resolve(this.cached());
+    var self = this;
+    return this.req("ideas?select=id,name,points,note,date,ts&order=date.desc")
+      .then(function(rows){ self.online = true; self.cache(rows); return rows; })
+      .catch(function(){ self.online = false; return self.cached(); });
+  },
+
+  add: function(entry){
+    if(!this.cloud) return Promise.resolve(this.available);
+    var self = this;
+    return this.req("ideas", { method:"POST", body: JSON.stringify(entry) })
+      .then(function(){ self.online = true; return true; })
+      .catch(function(){ self.online = false; return false; });
+  },
+
+  remove: function(id){
+    if(!this.cloud) return Promise.resolve(this.available);
+    var self = this;
+    return this.req("ideas?id=eq." + encodeURIComponent(id), { method:"DELETE" })
+      .then(function(){ self.online = true; return true; })
+      .catch(function(){ self.online = false; return false; });
   }
 };
 
-var entries = Store.read();
+var entries = [];
 var pending = null;              // { name: string }
 var el = function(id){ return document.getElementById(id); };
 
@@ -893,34 +942,56 @@ function close(){
 
 function save(){
   var pts = Number(document.querySelector('input[name="kind"]:checked').value);
-  var date = el("mDate").value || today();
-  entries.push({
+  var entry = {
     id: (Date.now().toString(36) + Math.random().toString(36).slice(2,7)),
     name: pending.name,
     points: pts,
     note: el("mNote").value.trim(),
-    date: date,
+    date: el("mDate").value || today(),
     ts: Date.now()
-  });
+  };
   var name = pending.name;
-  if(!Store.write(entries)){
-    entries.pop();
-    toast("تعذّر حفظ البيانات على هذا المتصفح");
-    return;
-  }
+  entries.push(entry);
   close();
   render();
-  toast("تم تسجيل " + arPoints(pts) + " لـ " + name);
+  Store.add(entry).then(function(ok){
+    if(!ok){
+      entries = entries.filter(function(e){ return e.id !== entry.id; });
+      render();
+      refreshWarning();
+      toast(Store.cloud ? "تعذّر الحفظ — تحقّقي من الاتصال" : "تعذّر حفظ البيانات على هذا المتصفح");
+      return;
+    }
+    Store.cache(entries);
+    refreshWarning();
+    toast("تم تسجيل " + arPoints(pts) + " لـ " + name);
+  });
 }
 
 function remove(id, name){
   if(!window.confirm("حذف مشاركة " + name + "؟ لا يمكن التراجع.")) return;
-  var keep = entries.filter(function(e){ return e.id !== id; });
-  var backup = entries;
-  entries = keep;
-  if(!Store.write(entries)){ entries = backup; toast("تعذّر حذف المشاركة"); return; }
+  var backup = entries.slice();
+  entries = entries.filter(function(e){ return e.id !== id; });
   render();
-  toast("تم حذف المشاركة");
+  Store.remove(id).then(function(ok){
+    if(!ok){ entries = backup; render(); refreshWarning(); toast("تعذّر حذف المشاركة"); return; }
+    Store.cache(entries);
+    refreshWarning();
+    toast("تم حذف المشاركة");
+  });
+}
+
+function refreshWarning(){
+  var w = el("storeWarn"), t = el("warnText");
+  if(Store.cloud && !Store.online){
+    t.innerHTML = '<b>تعذّر الوصول إلى قاعدة البيانات.</b> ما تشوفينه الآن نسخة محفوظة على هذا الجهاز، وأي تسجيل جديد لن يصل لبقية الفريق حتى يعود الاتصال.';
+    w.hidden = false;
+  } else if(!Store.cloud && !Store.available){
+    t.innerHTML = '<b>هذا المتصفح لا يسمح بحفظ البيانات هنا.</b> ستُفقد أي مشاركة تسجّلينها بمجرد إغلاق الصفحة. افتحي اللوحة عبر رابط موقع بدل فتح الملف مباشرة من الجهاز.';
+    w.hidden = false;
+  } else {
+    w.hidden = true;
+  }
 }
 
 var toastTimer = null;
@@ -981,7 +1052,9 @@ function exportReport(){
     var o = document.createElement("option"); o.value = n; o.textContent = n; sel.appendChild(o);
   });
 
-  el("storeWarn").hidden = Store.available;
+  refreshWarning();
+  el("foot").textContent = "كِفّة للقهوة المختصة — " +
+    (Store.cloud ? "سجل مشترك بين كل الأجهزة" : "البيانات محفوظة على هذا الجهاز");
 
   ["fName","fFrom","fTo"].forEach(function(id){
     el(id).addEventListener("change", render);
@@ -1007,6 +1080,20 @@ function exportReport(){
   });
 
   render();
+
+  Store.load().then(function(list){
+    entries = list;
+    refreshWarning();
+    render();
+  });
+
+  // مشاركات الزميلات تظهر تلقائيًا عند العودة للصفحة
+  if(Store.cloud){
+    document.addEventListener("visibilitychange", function(){
+      if(document.visibilityState !== "visible") return;
+      Store.load().then(function(list){ entries = list; refreshWarning(); render(); });
+    });
+  }
 })();
 })();
 </script>
