@@ -672,7 +672,8 @@ var Store = {
     return fetch(SUPABASE_URL.replace(/\/$/, "") + "/rest/v1/" + path, opts)
       .then(function(r){
         if(!r.ok) throw new Error("HTTP " + r.status);
-        return r.status === 204 ? null : r.json();
+        // الإضافة والحذف يردّان بلا محتوى، فـ r.json() عليهما يرمي خطأ
+        return r.text().then(function(t){ return t ? JSON.parse(t) : null; });
       });
   },
 
