@@ -88,6 +88,8 @@
 
 /* ---------- base ---------- */
 *,*::before,*::after{box-sizing:border-box}
+/* أي عنصر نضع عليه display يتجاوز [hidden] الافتراضي — نثبّتها مرة واحدة */
+[hidden]{display:none !important}
 html{-webkit-text-size-adjust:100%}
 html.is-locked{overflow:hidden}
 body{
@@ -307,7 +309,6 @@ tbody tr:hover{background:var(--surface-2)}
   display:grid; place-items:center; padding:20px; z-index:50; opacity:0; pointer-events:none;
   transition:opacity .2s ease;
 }
-.scrim[hidden]{display:none}
 .scrim[data-open]{opacity:1; pointer-events:auto}
 .modal{
   width:min(560px,100%); background:var(--surface); border-radius:var(--r-lg); box-shadow:var(--shadow-lg);
